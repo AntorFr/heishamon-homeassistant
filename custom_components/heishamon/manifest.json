@@ -1,5 +1,5 @@
 {
-  "domain": "aquarea",
+  "domain": "heishamon",
   "name": "HeishaMon",
   "codeowners": ["@kamaradclimber"],
   "config_flow": true,
