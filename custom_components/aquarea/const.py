@@ -2,7 +2,7 @@
 
 from enum import Enum
 
-DOMAIN = "aquarea"
+DOMAIN = "heishamon"
 
 
 class DeviceType(Enum):
