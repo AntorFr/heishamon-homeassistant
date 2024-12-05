@@ -176,6 +176,14 @@ ZONE_STATES_STRING = {
 }
 
 
+SMART_GRID_MODES_STRING = {
+    "0": "Normal",
+    "1": "Capacity 1",
+    "2": "HP/DHW off",
+    "3": "Capacity 2",
+}
+
+
 def read_zones_state(value):
     return ZONE_STATES_STRING.get(value, f"Unknown zone state value: {value}")
 
@@ -345,38 +353,22 @@ def bit_to_bool(value: str) -> Optional[bool]:
 
 
 def read_demandcontrol(value: str) -> Optional[int]:
-    i = int(value)
+    i = float(value)
     if i >= 43 and i <= 234:
-        return int((i - 43) / (234 - 43) * 100)
+        return round((i - 43) / (234 - 43) * 100)
     return None
 
 
 def write_demandcontrol(value: int) -> str:
-    return str(value / 100 * (234 - 43) + 43)
+    return str(int(value / 100 * (234 - 43) + 43))
 
 
 def read_smart_grid_mode(value: str) -> str:
-    if value == "0":
-        return "Normal"
-    elif value == "1":
-        return "Capacity 1"
-    elif value == "2":
-        return "HP/DHW off"
-    elif value == "3":
-        return "Capacity 2"
-    return str(value)
+    return SMART_GRID_MODES_STRING.get(value, f"Unknown smart grid mode: {value}")
 
 
 def write_smart_grid_mode(value: str) -> str:
-    if value == "Normal":
-        return "0"
-    elif value == "Capacity 1":
-        return "1"
-    elif value == "HP/DHW off":
-        return "2"
-    elif value == "Capacity 2":
-        return "3"
-    return str(value)
+    return lookup_by_value(SMART_GRID_MODES_STRING, value)
 
 
 def read_quiet_mode(value: str) -> str:
@@ -647,8 +639,9 @@ def build_numbers(mqtt_prefix: str) -> list[HeishaMonNumberEntityDescription]:
         ),
         HeishaMonNumberEntityDescription(
             heishamon_topic_id="SetDemandControl",
-            key=f"{mqtt_prefix}main/FakeDemandControl",  # FIXME: find how to get real value
+            key=f"{mqtt_prefix}commands/SetDemandControl",
             command_topic=f"{mqtt_prefix}commands/SetDemandControl",
+            retain=True,
             name="Demand Control",
             entity_category=EntityCategory.CONFIG,
             native_unit_of_measurement="%",
@@ -782,13 +775,14 @@ def build_selects(mqtt_prefix: str) -> list[HeishaMonSelectEntityDescription]:
         ),
         HeishaMonSelectEntityDescription(
             heishamon_topic_id="SetSmartGridMode",
-            key=f"{mqtt_prefix}main/FakeSmartGridMode", # FIXME: find how to get real value
+            key=f"{mqtt_prefix}commands/SetSmartGridMode",
             command_topic=f"{mqtt_prefix}commands/SetSmartGridMode",
+            retain=True,
             name="Smart Grid Mode",
             entity_category=EntityCategory.CONFIG,
             state=read_smart_grid_mode,
             state_to_mqtt=write_smart_grid_mode,
-            options=["Normal", "HP/DHW off", "Capacity 1", "Capacity 2"],
+            options=list(SMART_GRID_MODES_STRING.values()),
             entity_registry_enabled_default=False,  # comes from the optional PCB: disabled by default
         ),
     ]

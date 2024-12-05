@@ -12,6 +12,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import slugify
+from homeassistant.helpers.storage import Store
 
 from homeassistant.components.climate import ClimateEntityDescription
 from .definitions import OperatingMode
@@ -158,9 +159,17 @@ class HeishaMonZoneClimate(ClimateEntity):
         self._sensor_mode = ZoneSensorMode.WATER
         self._climate_mode = ZoneClimateMode.DIRECT
         self._mode = ZoneTemperatureMode.DIRECT
-        self.change_mode(ZoneTemperatureMode.DIRECT, initialization=True)
+        self._mode_guessed = True
+
+        self._store = Store(hass, version=1, key=self._attr_unique_id)
         # we only display heater by default
         self._attr_entity_registry_enabled_default = self.heater
+
+        # set default values so that attribute is always defined
+        self._attr_min_temp = self.UNDEFINED_VALUE
+        self._attr_max_temp = self.UNDEFINED_VALUE
+
+    UNDEFINED_VALUE = -42
 
     async def async_turn_off(self) -> None:
         await self.async_set_hvac_mode(HVACMode.OFF)
@@ -214,7 +223,7 @@ class HeishaMonZoneClimate(ClimateEntity):
                 self._attr_min_temp = 20
                 self._attr_max_temp = 55
             else:
-                self._attr_min_temp = 15
+                self._attr_min_temp = 5
                 self._attr_max_temp = 25
             self._attr_target_temperature_step = 1
         elif mode == ZoneTemperatureMode.ROOM:
@@ -231,6 +240,15 @@ class HeishaMonZoneClimate(ClimateEntity):
             # during initialization we cannot write HA state because entities are not registered yet.
             # Otherwise it triggers https://github.com/kamaradclimber/heishamon-homeassistant/issues/47
             self.async_write_ha_state()
+            self._mode_guessed = False
+            self._store.async_delay_save(self.build_data, delay=0)
+
+    def build_data(self):
+        return {
+            "zone_sensor_mode": int(self._sensor_mode.value),
+            "zone_climate_mode": int(self._climate_mode.value),
+            "zone_temperature_mode": int(self._mode.value),
+        }
 
     async def async_set_temperature(self, **kwargs) -> None:
         temperature = kwargs.get("temperature")
@@ -247,6 +265,9 @@ class HeishaMonZoneClimate(ClimateEntity):
             _LOGGER.info(
                 f"{self._climate_type()} Changing {self.name} target room temperature to {temperature} for zone {self.zone_id}"
             )
+        elif self._mode == ZoneTemperatureMode.NAN:
+            _LOGGER.warn(f"{self._climate_type()} Changing {self.name} target temperature is not allowed for zone {self.zone_id} (external thermostat)")
+            return
         else:
             raise Exception(f"Unknown climate mode: {self._mode}")
         payload = str(temperature)
@@ -269,9 +290,20 @@ class HeishaMonZoneClimate(ClimateEntity):
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to MQTT events."""
+        await super().async_added_to_hass()
 
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to MQTT events."""
+        stored_values = await self._store.async_load()
+        if stored_values:
+            self._sensor_mode = ZoneSensorMode(stored_values["zone_sensor_mode"])
+            self._climate_mode = ZoneClimateMode(stored_values["zone_climate_mode"])
+            self._mode = ZoneTemperatureMode(stored_values["zone_temperature_mode"])
+            self.change_mode(self._mode)
+            if self._mode == ZoneTemperatureMode.NAN:
+                self._attr_supported_features = ClimateEntityFeature.TURN_OFF | ClimateEntityFeature.TURN_ON
+        else:
+            self.change_mode(ZoneTemperatureMode.DIRECT, initialization=True)
+
+
         # per zone handle of sensory type to drive mode of operation
         @callback
         def sensor_mode_received(message):
@@ -332,10 +364,11 @@ class HeishaMonZoneClimate(ClimateEntity):
             _LOGGER.debug(
                 f"{self._climate_type()} Received target temperature for {self.zone_id}: {self._attr_target_temperature}"
             )
-            if self._attr_min_temp != None and self._attr_max_temp != None:
-                if self._attr_target_temperature not in range(self._attr_min_temp, self._attr_max_temp):
-                    # when reaching that point, maybe we should set a wider range to avoid blocking user?
-                    _LOGGER.warn(f"{self._climate_type()} Target temperature is not within expected range, this is suspicious")
+            if not self._mode_guessed:
+                if self._attr_min_temp != self.UNDEFINED_VALUE and self._attr_max_temp != self.UNDEFINED_VALUE:
+                    if self._attr_target_temperature < self._attr_min_temp or self._attr_target_temperature > self._attr_max_temp:
+                        # when reaching that point, maybe we should set a wider range to avoid blocking user?
+                        _LOGGER.warn(f"{self._climate_type()} Target temperature is not within expected range, this is suspicious. {self._attr_target_temperature} should be within [{self._attr_min_temp},{self._attr_max_temp}]")
             self.async_write_ha_state()
 
         if self.heater:
