@@ -1,6 +1,8 @@
 from __future__ import annotations
 import logging
 
+from typing import Any
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -9,14 +11,21 @@ from homeassistant.components import mqtt
 from homeassistant.components.mqtt.client import async_publish
 
 from homeassistant.components.water_heater import (
-    WaterHeaterEntityEntityDescription,
     WaterHeaterEntity,
     WaterHeaterEntityFeature,
     STATE_ECO,
     STATE_PERFORMANCE,
 )
+try:
+    from homeassistant.components.water_heater import WaterHeaterEntityDescription
+except ImportError:
+    # compatibility code for HA < 2025.1
+    from homeassistant.components.water_heater import WaterHeaterEntityEntityDescription
+    WaterHeaterEntityDescription = WaterHeaterEntityEntityDescription
 
-from .definitions import lookup_by_value, OperatingMode
+
+
+from .definitions import OperatingMode
 from . import build_device_info
 from .const import DeviceType
 
@@ -35,7 +44,7 @@ async def async_setup_entry(
         f"Starting bootstrap of water heater entities with prefix '{discovery_prefix}'"
     )
     """Set up HeishaMon water heater from config entry."""
-    description = WaterHeaterEntityEntityDescription(
+    description = WaterHeaterEntityDescription(
         key=f"{discovery_prefix}main/DHW_Target_Temp",
         name="Aquarea Domestic Water Heater",
     )
@@ -60,7 +69,7 @@ class HeishaMonDHW(WaterHeaterEntity):
     def __init__(
         self,
         hass: HomeAssistant,
-        description: WaterHeaterEntityEntityDescription,
+        description: WaterHeaterEntityDescription,
         config_entry: ConfigEntry,
     ) -> None:
         """Initialize the water heater entity."""
@@ -162,6 +171,39 @@ class HeishaMonDHW(WaterHeaterEntity):
             f"{self.discovery_prefix}main/DHW_Heat_Delta",
             heat_delta_received,
             1,
+        )
+
+        @callback
+        def operating_mode_received(message):
+            self._operating_mode = OperatingMode.from_mqtt(message.payload)
+            self.async_write_ha_state()
+
+        await mqtt.async_subscribe(
+            self.hass,
+            f"{self.discovery_prefix}main/Operating_Mode_State",
+            operating_mode_received,
+            1,
+        )
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        new_operating_mode = self._operating_mode | OperatingMode.DHW
+        await async_publish(
+                self.hass,
+                f"{self.discovery_prefix}commands/SetOperationMode",
+                new_operating_mode.to_mqtt(),
+                0,
+                False,
+                "utf-8",
+        )
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        new_operating_mode = self._operating_mode & ~OperatingMode.DHW
+        await async_publish(
+                self.hass,
+                f"{self.discovery_prefix}commands/SetOperationMode",
+                new_operating_mode.to_mqtt(),
+                0,
+                False,
+                "utf-8",
         )
 
     @property

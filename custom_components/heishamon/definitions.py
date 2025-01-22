@@ -29,7 +29,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntityDescription,
 )
 
-from .models import HEATPUMP_MODELS
+from .models import HEATPUMP_MODELS, HEATPUMP_MODELS_39
 from .const import DeviceType
 
 _LOGGER = logging.getLogger(__name__)
@@ -355,12 +355,14 @@ def bit_to_bool(value: str) -> Optional[bool]:
 def read_demandcontrol(value: str) -> Optional[int]:
     i = float(value)
     if i >= 43 and i <= 234:
-        return round((i - 43) / (234 - 43) * 100)
+        i = (i - 43) / (234 - 43)
+        return round(i * 95) + 5
     return None
 
 
 def write_demandcontrol(value: int) -> str:
-    return str(int(value / 100 * (234 - 43) + 43))
+    value = (value - 5) / 95 # 5% -> 100% to 0% -> 95% for remapping
+    return str(int(value * (234 - 43) + 43))
 
 
 def read_smart_grid_mode(value: str) -> str:
@@ -381,7 +383,10 @@ def read_quiet_mode(value: str) -> str:
 
 
 def read_heatpump_model(value: str) -> str:
-    return HEATPUMP_MODELS.get(value, "Unknown model for HeishaMon")
+    if len(value) < 8:
+        # heishamon < 3.9
+        return HEATPUMP_MODELS.get(value, "Unknown model for HeishaMon")
+    return HEATPUMP_MODELS_39.get(value, "Unknown model for HeishaMon")
 
 
 def read_solar_mode(value: str) -> str:
@@ -645,7 +650,7 @@ def build_numbers(mqtt_prefix: str) -> list[HeishaMonNumberEntityDescription]:
             name="Demand Control",
             entity_category=EntityCategory.CONFIG,
             native_unit_of_measurement="%",
-            native_min_value=20,
+            native_min_value=5,
             native_max_value=100,
             native_step=5,
             state=read_demandcontrol,
@@ -1062,6 +1067,18 @@ def read_stats_json(field_name: str, json_doc: str) -> Optional[float]:
         return float(field_value)
     return None
 
+def read_board_type(json_doc: str) -> Optional[str]:
+    j = json.loads(json_doc)
+    if "board" in j:
+        return j["board"]
+    if "voltage" in j:
+        # ESP32 has a static 3.3V and more than 64k free heap
+        if j["voltage"] != 3.3:
+            return "ESP8266"
+        if "free heap" in j:
+            if float(j["free heap"]) > 65535:
+                return "ESP32"
+    return None
 
 def ms_to_secs(value: Optional[float]) -> Optional[float]:
     if value:
@@ -1805,6 +1822,15 @@ def build_sensors(mqtt_prefix: str) -> list[HeishaMonSensorEntityDescription]:
             device=DeviceType.HEISHAMON,
             entity_category=EntityCategory.DIAGNOSTIC,
             state_class=SensorStateClass.MEASUREMENT,
+        ),
+        HeishaMonSensorEntityDescription(
+            heishamon_topic_id="STAT1-board",
+            key=f"{mqtt_prefix}stats",
+            name="HeishaMon Board type",
+            state=read_board_type,
+            device=DeviceType.HEISHAMON,
+            device_class=SensorDeviceClass.ENUM,
+            entity_category=EntityCategory.DIAGNOSTIC,
         ),
         HeishaMonSensorEntityDescription(
             heishamon_topic_id="INFO_ip",
